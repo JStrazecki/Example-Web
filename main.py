@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 """
-Power BI MCP Server with Teams Integration
-Teams bot integration for Power BI queries and workspace management
+Modular Power BI MCP Web Application
+Main entry point for the modular architecture
 """
 
 import os
 import sys
-import json
 import asyncio
 import logging
-from datetime import datetime
-from typing import Dict, Any, Optional
-from fastmcp import FastMCP
+from typing import Optional
+
+# Add modules to path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'modules'))
+
+from modules.config import get_config_manager
+from modules.web import WebServer
+from modules.auth import PowerBIAuthManager
 
 # Configure logging
 logging.basicConfig(
@@ -20,290 +24,219 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Suppress verbose logs
-logging.getLogger('msal').setLevel(logging.WARNING)
-
-# Initialize MCP server
-mcp = FastMCP("powerbi-teams-server")
-
-class EnvironmentConfig:
-    """Environment configuration manager"""
+class ModularPowerBIApp:
+    """Main application class for modular Power BI MCP web app"""
     
-    def __init__(self):
-        self.powerbi_vars = {
-            "POWERBI_TENANT_ID": "Power BI Tenant ID",
-            "POWERBI_CLIENT_ID": "Power BI Client ID",
-            "POWERBI_CLIENT_SECRET": "Power BI Client Secret"
-        }
+    def __init__(self, config_file: Optional[str] = None):
+        # Load configuration
+        self.config = get_config_manager(config_file)
         
-        self.teams_vars = {
-            "MICROSOFT_APP_ID": "Teams Bot App ID",
-            "MICROSOFT_APP_PASSWORD": "Teams Bot App Password"
-        }
+        # Validate critical configuration
+        validation = self.config.validate()
+        if validation["critical"]:
+            logger.critical("❌ Missing critical configuration!")
+            for var in validation["critical"]:
+                logger.critical(f"  - {var}")
+            self.config.print_configuration_status()
+            sys.exit(1)
+        
+        # Initialize components
+        self.auth_manager = None
+        self.web_server = None
+        self._setup_components()
     
-    def check_environment(self) -> Dict[str, Any]:
-        """Check and validate environment variables"""
-        logger.info("=== Power BI Configuration Check ===")
+    def _setup_components(self):
+        """Initialize application components"""
+        # Initialize Power BI authentication if configured
+        if self.config.powerbi:
+            try:
+                self.auth_manager = PowerBIAuthManager(
+                    tenant_id=self.config.powerbi.tenant_id,
+                    client_id=self.config.powerbi.client_id,
+                    client_secret=self.config.powerbi.client_secret
+                )
+                logger.info("✅ Power BI authentication manager initialized")
+            except Exception as e:
+                logger.error(f"❌ Failed to initialize Power BI auth: {e}")
+                sys.exit(1)
         
-        missing_vars = []
-        status = {
-            "powerbi": True, 
-            "teams": True
-        }
-        
-        # Check Power BI variables
-        logger.info("=== Power BI Configuration ===")
-        for var, description in self.powerbi_vars.items():
-            value = os.environ.get(var)
-            if not value:
-                logger.error(f"❌ {var}: NOT SET ({description})")
-                missing_vars.append(var)
-                status["powerbi"] = False
-            else:
-                if "SECRET" in var:
-                    masked = value[:4] + "***" + value[-4:] if len(value) > 8 else "***"
-                    logger.info(f"✓ {var}: {masked}")
-                else:
-                    logger.info(f"✓ {var}: {value[:30]}...")
-        
-        # Check Teams variables
-        logger.info("\n=== Teams Bot Configuration ===")
-        for var, description in self.teams_vars.items():
-            value = os.environ.get(var)
-            if not value:
-                logger.info(f"ℹ️ {var}: NOT SET ({description})")
-                status["teams"] = False
-            else:
-                if "PASSWORD" in var or "SECRET" in var:
-                    masked = value[:4] + "***" + value[-4:] if len(value) > 8 else "***"
-                    logger.info(f"✓ {var}: {masked}")
-                else:
-                    logger.info(f"✓ {var}: {value[:30]}...")
-        
-        return {
-            "missing_vars": missing_vars,
-            "status": status
-        }
-
-# Initialize configuration
-config = EnvironmentConfig()
-env_status = config.check_environment()
-
-# Initialize Power BI client if available
-POWERBI_CLIENT = None
-if env_status["status"]["powerbi"]:
-    try:
-        from powerbi_client import PowerBIClient
-        POWERBI_CLIENT = PowerBIClient()
-        logger.info("✓ Power BI client initialized")
-    except Exception as e:
-        logger.error(f"❌ Failed to initialize Power BI client: {e}")
-
-def register_powerbi_tools():
-    """Register Power BI-related MCP tools"""
-    
-    @mcp.tool()
-    def list_powerbi_workspaces() -> str:
-        """List available Power BI workspaces."""
-        if not POWERBI_CLIENT:
-            return json.dumps({
-                "error": "Power BI client not available",
-                "message": "Missing Power BI configuration"
-            })
-        
-        try:
-            workspaces = POWERBI_CLIENT.get_workspaces()
-            return json.dumps({
-                "workspaces": [
-                    {
-                        "id": ws.get("id"),
-                        "name": ws.get("name"),
-                        "type": ws.get("type", "Unknown")
-                    }
-                    for ws in workspaces
-                ]
-            }, indent=2)
-            
-        except Exception as e:
-            logger.error(f"Failed to list workspaces: {e}")
-            return json.dumps({
-                "error": "Failed to list workspaces",
-                "message": str(e)
-            })
-
-    @mcp.tool()
-    def list_powerbi_datasets(workspace_name: str) -> str:
-        """
-        List datasets in a Power BI workspace.
-        
-        Args:
-            workspace_name: Name of the Power BI workspace
-        """
-        if not POWERBI_CLIENT:
-            return json.dumps({
-                "error": "Power BI client not available"
-            })
-        
-        try:
-            workspace = POWERBI_CLIENT.get_workspace_by_name(workspace_name)
-            datasets = POWERBI_CLIENT.get_datasets(workspace["id"])
-            
-            return json.dumps({
-                "workspace": workspace_name,
-                "datasets": [
-                    {
-                        "id": ds.get("id"),
-                        "name": ds.get("name"),
-                        "configuredBy": ds.get("configuredBy", "Unknown")
-                    }
-                    for ds in datasets
-                ]
-            }, indent=2)
-            
-        except Exception as e:
-            logger.error(f"Failed to list datasets: {e}")
-            return json.dumps({
-                "error": "Failed to list datasets",
-                "message": str(e)
-            })
-
-    @mcp.tool()
-    def execute_dax_query(
-        workspace_name: str,
-        dataset_name: str,
-        dax_query: str
-    ) -> str:
-        """
-        Execute a DAX query against a Power BI dataset.
-        
-        Args:
-            workspace_name: Name of the Power BI workspace
-            dataset_name: Name of the dataset
-            dax_query: DAX query to execute
-        """
-        if not POWERBI_CLIENT:
-            return json.dumps({
-                "error": "Power BI client not available"
-            })
-        
-        try:
-            workspace = POWERBI_CLIENT.get_workspace_by_name(workspace_name)
-            dataset = POWERBI_CLIENT.get_dataset_by_name(workspace["id"], dataset_name)
-            
-            result = POWERBI_CLIENT.execute_dax_query(
-                workspace["id"], 
-                dataset["id"], 
-                dax_query
-            )
-            
-            # Extract table data from result
-            results = result.get("results", [])
-            if results and "tables" in results[0]:
-                return json.dumps(results[0]["tables"], indent=2)
-            else:
-                return json.dumps({"message": "No data returned"})
+        # Initialize web server if MCP is configured
+        if self.config.mcp:
+            try:
+                self.web_server = WebServer(
+                    mcp_url=self.config.mcp.server_url,
+                    mcp_api_key=self.config.mcp.api_key,
+                    host=self.config.web.host,
+                    port=self.config.web.port,
+                    config_manager=self.config
+                )
+                logger.info("✅ Web server initialized")
                 
-        except Exception as e:
-            logger.error(f"Failed to execute DAX query: {e}")
-            return json.dumps({
-                "error": "Failed to execute DAX query",
-                "message": str(e)
-            })
-
-def register_teams_tools():
-    """Register Teams-specific MCP tools"""
+                # Log AI capabilities
+                if self.config.azure_openai:
+                    logger.info("🤖 AI reasoning capabilities enabled")
+                else:
+                    logger.info("ℹ️ AI reasoning not configured - using standard mode")
+                    
+            except Exception as e:
+                logger.error(f"❌ Failed to initialize web server: {e}")
+                sys.exit(1)
     
-    @mcp.tool()
-    def format_teams_message(
-        content: str,
-        message_type: str = "text"
-    ) -> str:
-        """
-        Format content for Teams message display.
+    async def start(self):
+        """Start the modular application"""
+        logger.info("🚀 Starting Modular Power BI MCP Web Application")
         
-        Args:
-            content: Content to format
-            message_type: Type of message (text, card, table)
-        """
-        try:
-            if message_type == "table" and isinstance(content, str):
-                # Try to parse as JSON and format as table
+        # Print configuration status
+        self.config.print_configuration_status()
+        
+        # Start web server
+        if self.web_server:
+            try:
+                runner = await self.web_server.start()
+                logger.info("✅ All services started successfully")
+                
+                # Print service information
+                print("\n" + "="*60)
+                print("🌐 SERVICE ENDPOINTS")
+                print("="*60)
+                print(f"📱 Web Interface: http://{self.config.web.host}:{self.config.web.port}")
+                print(f"🔍 Health Check: http://{self.config.web.host}:{self.config.web.port}/health")
+                print(f"📊 API Documentation: http://{self.config.web.host}:{self.config.web.port}/info")
+                print(f"🔧 MCP Server: {self.config.mcp.server_url}")
+                
+                if self.config.teams:
+                    print(f"🤖 Teams Bot: http://{self.config.teams.bot_host}:{self.config.teams.bot_port}/api/messages")
+                
+                print("\n💡 USAGE INSTRUCTIONS:")
+                print("1. Open the web interface to interact with Power BI data")
+                print("2. Use the API endpoints for programmatic access")
+                if self.config.azure_openai:
+                    print("3. 🤖 Try AI-powered analysis at /ai/analyze endpoint")
+                    print("4. 🧠 Use smart DAX generation at /ai/dax endpoint")
+                    print("5. Configure Teams bot if needed for Teams integration")
+                    print("6. All requests are proxied through your deployed MCP server")
+                else:
+                    print("3. Configure Azure OpenAI for intelligent analysis features")
+                    print("4. Configure Teams bot if needed for Teams integration")
+                    print("5. All requests are proxied through your deployed MCP server")
+                print("\n🛑 Press Ctrl+C to stop all services")
+                print("="*60)
+                
+                # Keep the application running
                 try:
-                    data = json.loads(content)
-                    if isinstance(data, list) and len(data) > 0:
-                        # Convert to adaptive card table format
-                        headers = list(data[0].keys()) if data else []
-                        rows = []
-                        
-                        for item in data[:10]:  # Limit to 10 rows for Teams
-                            row = [str(item.get(header, "")) for header in headers]
-                            rows.append(row)
-                        
-                        table_markdown = "| " + " | ".join(headers) + " |\n"
-                        table_markdown += "| " + " | ".join(["---"] * len(headers)) + " |\n"
-                        
-                        for row in rows:
-                            table_markdown += "| " + " | ".join(row) + " |\n"
-                        
-                        return json.dumps({
-                            "type": "markdown",
-                            "content": table_markdown
-                        })
-                        
-                except json.JSONDecodeError:
-                    pass
-            
-            # Default text formatting
-            return json.dumps({
-                "type": "text",
-                "content": content
-            })
-            
-        except Exception as e:
-            logger.error(f"Failed to format Teams message: {e}")
-            return json.dumps({
-                "type": "text", 
-                "content": str(content)
-            })
+                    while True:
+                        await asyncio.sleep(1)
+                except KeyboardInterrupt:
+                    logger.info("🛑 Shutdown requested...")
+                finally:
+                    await self.cleanup(runner)
+                    
+            except Exception as e:
+                logger.error(f"❌ Failed to start web server: {e}")
+                sys.exit(1)
+        else:
+            logger.error("❌ No services configured to start")
+            sys.exit(1)
+    
+    async def cleanup(self, runner=None):
+        """Cleanup application resources"""
+        logger.info("🔄 Cleaning up application resources...")
+        
+        if self.web_server:
+            await self.web_server.cleanup()
+        
+        if runner:
+            await runner.cleanup()
+        
+        logger.info("✅ Application cleanup complete")
 
-def main():
-    """Main entry point"""
-    logger.info("Starting Power BI MCP Server with Teams Integration")
+def create_sample_config():
+    """Create a sample configuration file"""
+    sample_config = {
+        "powerbi": {
+            "tenant_id": "your-tenant-id-here",
+            "client_id": "your-client-id-here", 
+            "client_secret": "your-client-secret-here",
+            "scope": "https://analysis.windows.net/powerbi/api/.default"
+        },
+        "teams": {
+            "app_id": "your-teams-app-id-here",
+            "app_password": "your-teams-app-password-here",
+            "bot_port": 3978,
+            "bot_host": "0.0.0.0"
+        },
+        "mcp": {
+            "server_url": "https://your-mcp-server.com",
+            "api_key": "your-mcp-api-key-here",
+            "timeout": 60,
+            "retry_attempts": 3
+        },
+        "azure_openai": {
+            "endpoint": "https://your-openai.openai.azure.com/",
+            "api_key": "your-azure-openai-api-key-here",
+            "deployment_name": "gpt-4-turbo",
+            "api_version": "2024-02-15-preview",
+            "max_tokens": 4000,
+            "temperature": 0.3,
+            "thinking_enabled": True,
+            "analysis_depth": "standard",
+            "response_style": "business"
+        },
+        "web": {
+            "host": "0.0.0.0",
+            "port": 8080,
+            "enable_cors": True
+        },
+        "logging": {
+            "level": "INFO",
+            "enable_file_logging": False,
+            "log_dir": "./logs"
+        }
+    }
     
-    # Check environment status
-    if not env_status["status"]["powerbi"]:
-        logger.critical("❌ Missing required Power BI environment variables!")
-        logger.info("Required variables:")
-        for var in env_status["missing_vars"]:
-            logger.info(f"  - {var}")
-        sys.exit(1)
-    
-    # Register all tools
-    logger.info("Registering MCP tools...")
-    
-    if env_status["status"]["powerbi"]:
-        register_powerbi_tools()
-        logger.info("✓ Power BI tools registered")
-    else:
-        logger.error("❌ Power BI tools not available")
-        sys.exit(1)
-    
-    register_teams_tools()
-    logger.info("✓ Teams tools registered")
-    
-    # Start MCP server
-    logger.info("Starting MCP server...")
-    logger.info(f"Server capabilities: PowerBI={bool(POWERBI_CLIENT)}")
-    
+    config_file = "config.json"
     try:
-        mcp.run()
-    except KeyboardInterrupt:
-        logger.info("Server shutdown requested")
+        import json
+        with open(config_file, 'w') as f:
+            json.dump(sample_config, f, indent=2)
+        print(f"✅ Sample configuration created: {config_file}")
+        print("📝 Please update the configuration with your actual values")
+        return config_file
     except Exception as e:
-        logger.critical(f"Server startup failed: {e}")
+        print(f"❌ Failed to create sample config: {e}")
+        return None
+
+async def main():
+    """Main entry point"""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Modular Power BI MCP Web Application")
+    parser.add_argument("--config", "-c", help="Configuration file path")
+    parser.add_argument("--create-config", action="store_true", help="Create sample configuration file")
+    parser.add_argument("--validate-config", action="store_true", help="Validate configuration and exit")
+    
+    args = parser.parse_args()
+    
+    # Create sample configuration if requested
+    if args.create_config:
+        create_sample_config()
+        return
+    
+    # Validate configuration if requested
+    if args.validate_config:
+        config = get_config_manager(args.config)
+        config.print_configuration_status()
+        return
+    
+    # Start the application
+    try:
+        app = ModularPowerBIApp(args.config)
+        await app.start()
+    except KeyboardInterrupt:
+        logger.info("Application interrupted by user")
+    except Exception as e:
+        logger.error(f"Application failed: {e}", exc_info=True)
         sys.exit(1)
-    finally:
-        logger.info("Server shutdown complete")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

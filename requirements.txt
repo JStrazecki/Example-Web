@@ -1,44 +1,54 @@
-# requirements.txt - Power BI MCP Teams Bot Dependencies
+# Modular Power BI MCP Web Application Dependencies
 
-# MCP Framework
-fastmcp>=0.4.0
-
-# Teams Bot Framework
-botbuilder-core>=4.15.0
-botbuilder-schema>=4.15.0
-botframework-connector>=4.15.0
-botframework-streaming>=4.15.0
-
-# Azure authentication and Power BI
-azure-identity==1.15.0
-msal==1.31.1
-
-# Core web framework (for Teams bot endpoint)
+# Core web framework
 aiohttp==3.10.5
 aiohttp-cors==0.7.0
 
-# Security
-pyjwt==2.8.0
+# Authentication
+msal==1.31.1
+azure-identity==1.15.0
 
-# Utilities
-python-dotenv==1.0.0
-requests==2.31.0
+# Security and JWT handling
+pyjwt==2.8.0
 certifi==2023.11.17
-charset-normalizer==3.3.2
+
+# HTTP client
+requests==2.31.0
+
+# Environment and configuration
+python-dotenv==1.0.0
+
+# JSON handling
+ujson==5.8.0
+
+# Async utilities
+aiofiles==23.2.1
 
 # Data processing
 pandas==2.0.3
 python-dateutil==2.8.2
 
-# Async utilities
-aiofiles==23.2.1
+# Utilities
+charset-normalizer==3.3.2
 
-# JSON handling
-ujson==5.8.0
-
-# Logging and monitoring
+# System monitoring
 psutil==5.9.0
 
 # Development and testing
 pytest>=7.0.0
 pytest-asyncio>=0.21.0
+
+# Optional: Teams Bot Framework (only if using Teams integration)
+# Uncomment these lines if you plan to use the Teams bot functionality
+# botbuilder-core>=4.15.0
+# botbuilder-schema>=4.15.0
+# botframework-connector>=4.15.0
+# botframework-streaming>=4.15.0
+
+# Optional: FastMCP (only if running local MCP server)
+# Uncomment this line if you want to run a local MCP server
+# fastmcp>=0.4.0
+
+# AI and Azure OpenAI dependencies
+openai>=1.12.0
+azure-cognitiveservices-language-textanalytics>=5.3.0
